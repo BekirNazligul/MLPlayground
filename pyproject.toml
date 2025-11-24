@@ -1,0 +1,26 @@
+[project]
+name = "scratchtransformer"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = "==3.13.*"
+dependencies = [
+    "notebook>=7.4.5",
+    "numpy==2.3.2",
+    "tensorboard==2.20.0",
+    "tqdm==4.67.1",
+    "torch",
+    "tiktoken==0.12.0",
+    "typeguard==4.4.4",
+    "jaxtyping==0.3.3",
+    "datasets==4.4.1",
+    "torchsummary==1.5.1",
+    "matplotlib>=3.7.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
