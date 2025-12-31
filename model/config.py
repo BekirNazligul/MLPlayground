@@ -1,5 +1,7 @@
 import dataclasses
 
+from rotary_embedding_torch import RotaryEmbedding
+
 
 @dataclasses.dataclass
 class TransformerConfig:
@@ -12,4 +14,5 @@ class TransformerConfig:
     attention_dim: int
     feed_forward_dim: int
     flash_attention: bool = False
+    rotary_embedding: RotaryEmbedding | None = None
 

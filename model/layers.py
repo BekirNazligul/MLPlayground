@@ -3,6 +3,7 @@ from typing import Tuple
 
 import torch
 from jaxtyping import Float
+from rotary_embedding_torch import RotaryEmbedding
 from torch import nn, Tensor
 from torch.nn import ModuleDict, LayerNorm
 from torch.nn.functional import softmax, scaled_dot_product_attention
@@ -11,8 +12,8 @@ from model.config import TransformerConfig
 
 FLOAT_MIN = float('-inf')
 
-class RotaryPositionalEmbedding(nn.Module):
 
+class RotaryPositionalEmbedding(nn.Module):
     rotation_matrix: Float[Tensor, "EMBEDDING_DIM EMBEDDING_DIM"]
     positional_embedding: Float[Tensor, "SEQUENCE_LENGTH EMBEDDING_DIM"]
 
@@ -29,7 +30,7 @@ class RotaryPositionalEmbedding(nn.Module):
             for j in range(config.embedding_dim):
                 self.positional_embedding[i, j] = torch.cos(torch.scalar_tensor(i * j * 0.01))
 
-    def forward(self,x: Float[Tensor, "BATCH_SIZE SEQUENCE_LENGTH EMBEDDING_DIM"]):
+    def forward(self, x: Float[Tensor, "BATCH_SIZE SEQUENCE_LENGTH EMBEDDING_DIM"]):
         x += self.positional_embedding
 
         x = x @ self.rotation_matrix
@@ -38,7 +39,6 @@ class RotaryPositionalEmbedding(nn.Module):
 
 
 class PositionalEmbedding(nn.Module):
-
     positional_embedding: Float[Tensor, "SEQUENCE_LENGTH EMBEDDING_DIM"]
 
     def __init__(self, config: TransformerConfig):
@@ -55,15 +55,12 @@ class PositionalEmbedding(nn.Module):
         positional_embedding = torch.cat([pos_encoding_sin, pos_encoding_cos], dim=-1)
         self.positional_embedding = nn.Parameter(data=positional_embedding, requires_grad=False)
 
-    def forward(self,x: Float[Tensor, "BATCH_SIZE SEQUENCE_LENGTH EMBEDDING_DIM"]):
+    def forward(self, x: Float[Tensor, "BATCH_SIZE SEQUENCE_LENGTH EMBEDDING_DIM"]):
         seq_len = x.size(1)
 
         x = x + self.positional_embedding[:seq_len]
 
         return x
-
-
-
 
 
 class FFN(nn.Module):
@@ -89,15 +86,17 @@ class MultiHeadedAttention(nn.Module):
     attention_dim: int
     causal_mask: Tensor
     flash_attention: bool
+    rotary_embedding: RotaryEmbedding | None
 
     def __init__(self, config: TransformerConfig):
         super().__init__()
-        self.in_project = nn.Linear(config.embedding_dim, 3 * config.num_attention_heads * config.attention_dim)
-        self.out_project = nn.Linear(config.num_attention_heads * config.attention_dim, config.embedding_dim)
+        self.in_project = nn.Linear(config.embedding_dim, 3 * config.num_attention_heads * config.attention_dim, bias=False)
+        self.out_project = nn.Linear(config.num_attention_heads * config.attention_dim, config.embedding_dim, bias=False)
         self.num_attention_heads = config.num_attention_heads
         self.attention_dim = config.attention_dim
         self.embedding_dim = config.embedding_dim
-        self.flash_attention= config.flash_attention
+        self.flash_attention = config.flash_attention
+        self.rotary_embedding = config.rotary_embedding
 
         # TODO:debug and understand tf is this
         causal_mask = (torch.tril(torch.ones(config.sequence_length, config.sequence_length))
@@ -113,6 +112,10 @@ class MultiHeadedAttention(nn.Module):
         v: Float[Tensor, "BATCH_SIZE NUM_HEADS SEQUENCE_LENGTH ATTENTION_DIM"]
 
         q, k, v = self._project_input(x)
+
+        if self.rotary_embedding:
+            q = self.rotary_embedding.rotate_queries_or_keys(q)
+            k = self.rotary_embedding.rotate_queries_or_keys(k)
 
         attention_output: Float[Tensor, "BATCH_SIZE NUM_HEADS SEQUENCE_LENGTH ATTENTION_DIM"] = (
             self._causal_attention(SEQUENCE_LENGTH, q, k, v) if not self.flash_attention
@@ -137,7 +140,6 @@ class MultiHeadedAttention(nn.Module):
                           q: Float[Tensor, "BATCH_SIZE NUM_HEADS SEQUENCE_LENGTH ATTENTION_DIM"],
                           k: Float[Tensor, "BATCH_SIZE NUM_HEADS SEQUENCE_LENGTH ATTENTION_DIM"],
                           v: Float[Tensor, "BATCH_SIZE NUM_HEADS SEQUENCE_LENGTH ATTENTION_DIM"]) -> Float[Tensor, "BATCH_SIZE NUM_HEADS SEQUENCE_LENGTH ATTENTION_DIM"]:
-
         k_transposed: Float[Tensor, "BATCH_SIZE NUM_HEADS ATTENTION_DIM SEQUENCE_LENGTH"] = k.transpose(-2, -1)  # Align dimensions for dot product
 
         attention_scores: Float[Tensor, "BATCH_SIZE NUM_HEADS SEQUENCE_LENGTH SEQUENCE_LENGTH"] = (
@@ -145,7 +147,7 @@ class MultiHeadedAttention(nn.Module):
         )
 
         masked_attention_scores: Float[Tensor, "BATCH_SIZE NUM_HEADS SEQUENCE_LENGTH SEQUENCE_LENGTH"] = (
-            attention_scores.masked_fill(self.causal_mask[:,:,:sequence_length,:sequence_length] == 0, FLOAT_MIN)  # Apply causal mask
+            attention_scores.masked_fill(self.causal_mask[:, :, :sequence_length, :sequence_length] == 0, FLOAT_MIN)  # Apply causal mask
         )
 
         attention_weights: Float[Tensor, "BATCH_SIZE NUM_HEADS SEQUENCE_LENGTH SEQUENCE_LENGTH"] = (

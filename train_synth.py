@@ -4,7 +4,9 @@ import math
 import dataclasses
 from typing import Iterator, Tuple
 
+import rotary_embedding_torch
 import torch
+from rotary_embedding_torch import RotaryEmbedding
 from torch import Tensor
 from torch.utils.data import IterableDataset, DataLoader
 
@@ -14,30 +16,30 @@ from datasets import load_dataset
 from model.models import GPT
 from model.config import TransformerConfig
 
-
+torch.serialization.safe_globals([rotary_embedding_torch.rotary_embedding_torch.RotaryEmbedding])
 # ==========================
 # Hyperparameters
 # ==========================
 
 MODEL_EMBED_DIM = 768
-MODEL_NUM_HEADS = 12
-MODEL_ATTENTION_DIM = 64
+MODEL_NUM_HEADS = 24
+MODEL_ATTENTION_DIM = 32
 MODEL_BLOCKS = 6
 MODEL_FF_DIM = 2048
 SEQUENCE_LENGTH = 512
 
-BATCH_SIZE = 16
-GRAD_ACCUM_STEPS = 1  # set >1 to emulate larger batch
+BATCH_SIZE = 8
+GRAD_ACCUM_STEPS = 4  # set >1 to emulate larger batch
 
 LEARNING_RATE = 3e-4
 WEIGHT_DECAY = 0.1
 GRAD_CLIP = 1.0
-MAX_STEPS = 200
+MAX_STEPS = 5000
 LOG_INTERVAL = 50
 
 SAVE_INTERVAL = 500
 
-MAX_TRAIN_EXAMPLES = 100_000  # set to None to use full SYNTH train split
+MAX_TRAIN_EXAMPLES = 300_000  # set to None to use full SYNTH train split
 
 CHECKPOINT_DIR = "checkpoints"
 CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, "gpt_synth_latest.pt")
@@ -64,11 +66,16 @@ class SynthTokenDataset(IterableDataset):
         hf_dataset,
         tokenizer,
         sequence_length: int,
+        stride: int | None = None,
     ) -> None:
         super().__init__()
         self.hf_dataset = hf_dataset
         self.tokenizer = tokenizer
         self.sequence_length = sequence_length
+        # How far to advance the buffer between emitted chunks.
+        # - Default (None) keeps original non-overlapping behavior (stride = sequence_length)
+        # - Smaller stride (< sequence_length) yields overlapping chunks.
+        self.stride = stride if stride is not None else sequence_length
         # Use GPT-2 EOS token
         self.eos_id = self.tokenizer.encode(
             "<|endoftext|>", allowed_special={"<|endoftext|>"}
@@ -95,11 +102,12 @@ class SynthTokenDataset(IterableDataset):
             token_buffer.extend(tokens)
             token_buffer.append(self.eos_id)
 
-            # Emit as many full sequences as possible from the buffer
-            # We advance by sequence_length tokens each time (non-overlapping chunks).
+            # Emit as many full sequences as possible from the buffer.
+            # We advance by `self.stride` tokens each time, which can be
+            # smaller than `sequence_length` to yield overlapping chunks.
             while len(token_buffer) >= self.sequence_length + 1:
                 chunk = token_buffer[: self.sequence_length + 1]
-                token_buffer = token_buffer[self.sequence_length :]
+                token_buffer = token_buffer[self.stride :]
 
                 input_ids = torch.tensor(chunk[:-1], dtype=torch.long)
                 target_ids = torch.tensor(chunk[1:], dtype=torch.long)
@@ -117,6 +125,7 @@ def build_model(vocab_size: int) -> GPT:
         vocab_size=vocab_size,
         feed_forward_dim=MODEL_FF_DIM,
         flash_attention=True,
+        rotary_embedding=RotaryEmbedding(dim=MODEL_ATTENTION_DIM)
     )
     return GPT(config)
 
@@ -202,6 +211,7 @@ def train() -> None:
         hf_dataset=raw_train,
         tokenizer=enc,
         sequence_length=SEQUENCE_LENGTH,
+        stride=SEQUENCE_LENGTH // 2,
     )
 
     # Use a small number of workers to overlap CPU preprocessing with GPU,
@@ -223,6 +233,7 @@ def train() -> None:
             hf_dataset=raw_val,
             tokenizer=enc,
             sequence_length=SEQUENCE_LENGTH,
+            stride=SEQUENCE_LENGTH // 2,
         )
         val_loader = DataLoader(
             val_dataset,
@@ -245,14 +256,14 @@ def train() -> None:
         weight_decay=WEIGHT_DECAY,
     )
 
-    scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
+    scaler = torch.amp.GradScaler(device="cuda")
 
     # Resume from checkpoint if present
     step = 0
     tokens_processed = 0
     if os.path.exists(CHECKPOINT_PATH):
         print(f"Found checkpoint at {CHECKPOINT_PATH}, loading ...")
-        ckpt = torch.load(CHECKPOINT_PATH, map_location=device)
+        ckpt = torch.load(CHECKPOINT_PATH, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
         if "optimizer_state_dict" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer_state_dict"])
@@ -297,7 +308,7 @@ def train() -> None:
                 batch_tokens = inputs.numel()
                 tokens_processed += batch_tokens
                 running_tokens += batch_tokens
-                running_loss += loss.item() * GRAD_ACCUM_STEPS  # undo division for logging
+                running_loss += loss.item() #* GRAD_ACCUM_STEPS  # undo division for logging
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
             scaler.step(optimizer)
