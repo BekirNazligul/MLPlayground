@@ -4,8 +4,8 @@ import torch
 from torch import nn, ModuleDict, Tensor
 from torch.nn import ModuleList
 
-from model.config import TransformerConfig
-from model.layers import RotaryPositionalEmbedding, TransformerBlock, PositionalEmbedding
+from transformer.config import TransformerConfig
+from transformer.layers import RotaryPositionalEmbedding, TransformerBlock, PositionalEmbedding
 
 
 class GPT(nn.Module):

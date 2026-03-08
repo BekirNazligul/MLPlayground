@@ -5,10 +5,10 @@ import torch
 from jaxtyping import Float
 from rotary_embedding_torch import RotaryEmbedding
 from torch import nn, Tensor
-from torch.nn import ModuleDict, LayerNorm
+from torch.nn import LayerNorm
 from torch.nn.functional import softmax, scaled_dot_product_attention
 
-from model.config import TransformerConfig
+from transformer.config import TransformerConfig
 
 FLOAT_MIN = float('-inf')
 
@@ -98,7 +98,6 @@ class MultiHeadedAttention(nn.Module):
         self.flash_attention = config.flash_attention
         self.rotary_embedding = config.rotary_embedding
 
-        # TODO:debug and understand tf is this
         causal_mask = (torch.tril(torch.ones(config.sequence_length, config.sequence_length))
                        .view(1, 1, config.sequence_length, config.sequence_length))
 

@@ -13,8 +13,8 @@ from torch.utils.data import IterableDataset, DataLoader
 import tiktoken
 from datasets import load_dataset
 
-from model.models import GPT
-from model.config import TransformerConfig
+from transformer.models import GPT
+from transformer.config import TransformerConfig
 
 torch.serialization.safe_globals([rotary_embedding_torch.rotary_embedding_torch.RotaryEmbedding])
 # ==========================
